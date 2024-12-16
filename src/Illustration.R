@@ -129,13 +129,14 @@ nd <- sam |> select(dom, nd) |> unique() |> pull(nd)
 
 # Diagonistic qqplot for residuals of U
 ee <- residuals(mod.est, type='pearson')
+sam$res <- ee
 
-p.dm <- ggplot(sam, aes(x = PUNT_MATEMATICAS)) + 
+p.dm <- ggplot(sam, aes(x = res)) + 
   geom_histogram(aes(y = after_stat(density)),
                  colour = 1, fill = "white") +
   geom_density(alpha = .2, fill = "antiquewhite3") +
   theme_bw() + 
-  xlab("Mathematics score")
+  xlab("Residuals")
 
 df.residuals <- tibble(resid = ee)
 p.qqRes <- df.residuals |> 
@@ -152,12 +153,22 @@ p.fitRes <- df.residuals |>
   ggplot(aes(x = pred, y = resid)) + 
   geom_point()+
   theme_bw() +
-  ylab("Fitted values") + 
-  xlab("Residuals")
+  ylab("Residuals") + 
+  xlab("Fitted values")
+
+u.pred <- ranef(mod.est)
+df.ranef <- tibble(ranef = u.pred$dom[,1])
+p.qqRanef <- df.ranef |> 
+  ggplot(aes(sample = ranef)) + 
+  stat_qq() + 
+  stat_qq_line() +
+  theme_bw() +
+  ylab("Sample quantiles") + 
+  xlab("Theorical quantiles")
 
 # Diagnostic model plots
-p3 <- ggarrange(ggarrange(p.dm,p.qqRes, ncol = 2, labels = c("A", "B")),
-                ggarrange(p.fitRes, labels = c("C")),
+p3 <- ggarrange(ggarrange(p.dm, p.qqRes, ncol = 2, labels = c("A", "B")),
+                ggarrange(p.fitRes, p.qqRanef, ncol = 2, labels = c("C", "D")),
                 nrow = 2)
 
 p3
