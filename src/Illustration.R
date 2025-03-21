@@ -6,6 +6,8 @@ rm(list=ls())
 
 # # Directories
 inPath	<- "../input"
+outPath <- "../output"
+if(!dir.exists(outPath)) dir.create(outPath)
 
 # # Libraries
 library(pacman)
@@ -25,7 +27,8 @@ path <- file.path(inPath, "SB11_20182.RData")
 load(path) # df
 
 vars_pruebas <- c("PUNT_MATEMATICAS","PUNT_INGLES","PUNT_LECTURA_CRITICA","PUNT_C_NATURALES","PUNT_SOCIALES_CIUDADANAS")
-df <- df |> select(ESTU_CONSECUTIVO, COLE_COD_DEPTO_UBICACION, COLE_DEPTO_UBICACION, all_of(vars_pruebas))
+df <- df |> select(ESTU_CONSECUTIVO, COLE_COD_DEPTO_UBICACION, COLE_DEPTO_UBICACION, all_of(vars_pruebas), ESTU_INSE_INDIVIDUAL) |> 
+  filter(!is.na(ESTU_INSE_INDIVIDUAL))
 
 id_deptos <- df |> 
   group_by(COLE_COD_DEPTO_UBICACION, COLE_DEPTO_UBICACION) |> 
@@ -48,7 +51,7 @@ sizes <- df |>
 
 df_pop_totals <- df |> 
   group_by(dom) |> 
-  summarise(Nd = n(), LC = sum(PUNT_LECTURA_CRITICA), CN = sum(PUNT_C_NATURALES) )
+  summarise(Nd = n(), ESTU_INSE_INDIVIDUAL = sum(ESTU_INSE_INDIVIDUAL))
 
 # Sample
 set.seed(seed)
@@ -73,7 +76,7 @@ sam.estimates <- stsi.dsgn |>
 sam.estimates <- sam.estimates |> 
   left_join(df_pop_totals |> 
     rowwise() |> 
-    mutate(LC = LC/Nd, CN = CN/Nd) |> 
+    mutate(ESTU_INSE_INDIVIDUAL = ESTU_INSE_INDIVIDUAL/Nd) |> 
     select(-Nd), by = "dom") |> 
   data.frame()
 
@@ -93,12 +96,12 @@ for(d in domains){
     as_survey_design(fpc = Nd, weights = dk)
   
   pop.totals <- df_pop_totals |> filter(dom  == d) |> 
-    select(-dom, PUNT_LECTURA_CRITICA=LC, PUNT_C_NATURALES = CN) |> 
+    select(-dom, ESTU_INSE_INDIVIDUAL) |> 
     as.vector() |> unlist()
   names(pop.totals)[1] <- '(Intercept)'
   
   greg.dsgn <- calibrate(design = stsi.dsgn,
-                         formula = ~PUNT_LECTURA_CRITICA+PUNT_C_NATURALES,
+                         formula = ~ESTU_INSE_INDIVIDUAL,
                          calfun="linear",
                          population = pop.totals)
 
@@ -107,24 +110,24 @@ for(d in domains){
   df_temp <- greg.dsgn |> summarise(mat = survey_mean(PUNT_MATEMATICAS, vartype = c("var")))
   sam.estimates <- sam.estimates |> mutate(mat_Cal = ifelse(dom == d, df_temp$mat, mat_Cal),
                                            mat_var_Cal = ifelse(dom == d, df_temp$mat, mat_var_Cal))
-  cat("Finish ", d, "\n")
+  cat("acabe ", d, "\n")
 }
 
 ################################################################################
 # # FHD predictor
 ################################################################################
-est.FHD <- mseFH(mat_Cal ~ LC+CN, vardir = mat_var_Cal, data = sam.estimates)
+est.FHD <- mseFH(mat_Cal ~ ESTU_INSE_INDIVIDUAL, vardir = mat_var_Cal, data = sam.estimates)
 
 ################################################################################
 # # U predictor and PB estimator
 ################################################################################
-mod.est <- lmer(PUNT_MATEMATICAS ~ PUNT_LECTURA_CRITICA+PUNT_C_NATURALES + (1|dom), data = sam)
+mod.est <- lmer(PUNT_MATEMATICAS ~ ESTU_INSE_INDIVIDUAL + (1|dom), data = sam)
 beta_est    <- fixef(mod.est)
 sigmau2_est <- as.numeric(VarCorr(mod.est))
 sigmae2_est <- summary(mod.est)$sigma^2
 
-Xs <- sam |> ungroup() |> mutate(cons=1) |> select(cons,PUNT_LECTURA_CRITICA,PUNT_C_NATURALES) |> as.matrix()
-Xd <- df_pop_totals |> mutate(cons=1) |> select(-dom) |> rowwise() |> mutate(LC = LC / Nd, CN = CN/Nd) |> ungroup() |> select(cons, LC, CN) |>  as.matrix()
+Xs <- sam |> ungroup() |> mutate(cons=1) |> select(cons,ESTU_INSE_INDIVIDUAL) |> as.matrix()
+Xd <- df_pop_totals |> mutate(cons=1) |> select(-dom) |> rowwise() |> mutate(ESTU_INSE_INDIVIDUAL = ESTU_INSE_INDIVIDUAL / Nd) |> ungroup() |> select(cons, ESTU_INSE_INDIVIDUAL) |>  as.matrix()
 nd <- sam |> select(dom, nd) |> unique() |> pull(nd)
 
 # Diagonistic qqplot for residuals of U
@@ -166,12 +169,31 @@ p.qqRanef <- df.ranef |>
   ylab("Sample quantiles") + 
   xlab("Theorical quantiles")
 
+# ranef vs covariates
+df.ranef.cov <- df.ranef |> 
+  mutate(dom = 1:n()) |> 
+  select(dom, ranef) |> 
+  left_join(
+    df_pop_totals |> 
+      mutate(ESTU_INSE_INDIVIDUAL = ESTU_INSE_INDIVIDUAL/Nd) |> 
+      select(dom, ESTU_INSE_INDIVIDUAL), by = "dom")
+
+p.ranef.cov <- df.ranef.cov |> 
+  pivot_longer(!c("dom", "ranef"), names_to = "Covariate") |> 
+  ggplot(aes(x = value, y = ranef)) + 
+  geom_point() + 
+  theme_bw() +
+  geom_hline(yintercept = 0) +
+  ylab("Predicted random effects") + 
+  xlab("Area means of the INSE index")
+
 # Diagnostic model plots
 p3 <- ggarrange(ggarrange(p.dm, p.qqRes, ncol = 2, labels = c("A", "B")),
                 ggarrange(p.fitRes, p.qqRanef, ncol = 2, labels = c("C", "D")),
                 nrow = 2)
 
 p3
+p.ranef.cov
 
 # U predictor
 est.U <- pseudo_EBLUP(ys=sam$PUNT_MATEMATICAS,
@@ -197,9 +219,9 @@ for(ii in 1:n.replicas.boot){
          Xs=Xs,
          PopnSegments=PopnSegments,
          nd= nd,
-         formula.mod = 'PUNT_LECTURA_CRITICA+PUNT_C_NATURALES+(1|dom)',
+         formula.mod = 'ESTU_INSE_INDIVIDUAL+(1|dom)',
          weights.calib = sam$dkCal)
-  cat('Replicate ', ii, 'done \n')
+  cat('Replicate', ii, 'done \n')
 }
 
 mse.est.U.PB <- results.PB |> 
@@ -220,16 +242,16 @@ psid.est.UA <- sam |>
 df.UA <- df.UA |> mutate(term2Psid = psid.est.UA)
 
 vf1Fixed <- varFixed(~term2Psid)
-fit1 <- try(lme(fixed = mat_Cal ~ LC + CN, 
+fit1 <- try(lme(fixed = mat_Cal ~ ESTU_INSE_INDIVIDUAL,
   random = ~1|dom, weights = vf1Fixed, data = df.UA))
 
 sigmae2.fit1 <- fit1$sigma^2
 
 df.UA$psid.est.UA <- sigmae2.fit1 * df.UA$term2Psid
 
-eblupUA <- eblupFH(mat_Cal ~ LC + CN, vardir=psid.est.UA, data = df.UA)
+eblupUA <- eblupFH(mat_Cal ~ ESTU_INSE_INDIVIDUAL, vardir=psid.est.UA, data = df.UA)
 
-Xmean <- model.matrix(mat_Cal ~ LC + CN, df.UA)
+Xmean <- model.matrix(mat_Cal ~ ESTU_INSE_INDIVIDUAL, df.UA)
 
 results.PB <- NULL
 set.seed(seed)
